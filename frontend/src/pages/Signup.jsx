@@ -59,8 +59,8 @@ export default function Signup() {
       <div className="hidden lg:flex lg:w-1/2 bg-primary-900 text-white flex-col justify-center px-16">
         <div className="max-w-md">
           <div className="flex items-center gap-3 mb-8">
-            <div className="w-12 h-12 bg-white rounded-lg flex items-center justify-center">
-              <span className="text-2xl">⚖️</span>
+            <div className="w-16 h-16 bg-white overflow-hidden rounded-xl flex items-center justify-center shadow-lg">
+              <img src="/logo.png" alt="SevaBot" className="w-full h-full object-contain p-1" />
             </div>
             <div>
               <h1 className="text-2xl font-bold tracking-tight">SevaBot</h1>
@@ -103,8 +103,8 @@ export default function Signup() {
           {/* Mobile-only branding */}
           <div className="lg:hidden text-center mb-8">
             <div className="inline-flex items-center gap-2 mb-3">
-              <div className="w-10 h-10 bg-primary-900 rounded-lg flex items-center justify-center">
-                <span className="text-xl">⚖️</span>
+              <div className="w-12 h-12 bg-primary-700 overflow-hidden rounded-xl flex items-center justify-center shadow-md">
+                <img src="/logo.png" alt="SevaBot" className="w-full h-full object-contain p-1" />
               </div>
               <span className="text-xl font-bold text-primary-900">SevaBot</span>
             </div>

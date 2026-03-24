@@ -120,6 +120,9 @@ export const authAPI = {
   signup: (userData) => api.post('/auth/signup/', userData),
   login: (credentials) => api.post('/auth/login/', credentials),
   logout: () => api.post('/auth/logout/'),
+  getProfile: () => api.get('/auth/profile/'),
+  updateProfile: (userData) => api.patch('/auth/profile/', userData),
+  changePassword: (passwordData) => api.post('/auth/change-password/', passwordData),
 };
 
 // Conversation APIs

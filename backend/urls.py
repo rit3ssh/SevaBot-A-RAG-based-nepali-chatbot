@@ -29,7 +29,10 @@ from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
 
+from chat.views import health_check
+
 urlpatterns = [
+    path('', health_check, name='health_check'),
     path('admin/', admin.site.urls),
     path('api/', include('chat.urls')),
 ]

@@ -183,3 +183,28 @@ def delete_document_file_on_row_delete(sender, instance, **kwargs):
         return
 
     instance.file.delete(save=False)
+
+
+class Profile(models.Model):
+    """
+    Extended user profile for storing app-specific settings.
+    """
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
+    llm_api_key = models.CharField(max_length=255, null=True, blank=True)
+    
+    def __str__(self):
+        return f"Profile for {self.user.username}"
+
+@receiver(models.signals.post_save, sender=User)
+def create_user_profile(sender, instance, created, **kwargs):
+    """Automatically create a profile when a new user is created."""
+    if created:
+        Profile.objects.create(user=instance)
+
+@receiver(models.signals.post_save, sender=User)
+def save_user_profile(sender, instance, **kwargs):
+    """Ensure profile stays in sync with user."""
+    if hasattr(instance, 'profile'):
+        instance.profile.save()
+    else:
+        Profile.objects.create(user=instance)

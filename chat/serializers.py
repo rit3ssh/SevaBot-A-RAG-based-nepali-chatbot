@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
-from .models import Conversation, Message, Document
+from .models import Conversation, Message, Document, Profile
 
 
 def build_ordered_messages(conversation: Conversation):
@@ -74,23 +74,47 @@ def build_recent_exchange(conversation: Conversation):
 
 class UserSerializer(serializers.ModelSerializer):
     """
-    Serializer for user registration.
+    Serializer for user registration and profile management.
     We use write_only for password so it's never returned in API responses.
     """
-    password = serializers.CharField(write_only=True, min_length=8)
+    password = serializers.CharField(write_only=True, min_length=8, required=False)
+    llm_api_key = serializers.CharField(source='profile.llm_api_key', required=False, allow_null=True, allow_blank=True)
 
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'password']
+        fields = ['id', 'username', 'email', 'password', 'llm_api_key']
 
     def create(self, validated_data):
         # Use create_user to properly hash passwords
+        password = validated_data.pop('password')
         user = User.objects.create_user(
             username=validated_data['username'],
             email=validated_data.get('email', ''),
-            password=validated_data['password']
+            password=password
         )
         return user
+
+    def update(self, instance, validated_data):
+        # Handle password update separately if provided
+        if 'password' in validated_data:
+            password = validated_data.pop('password')
+            instance.set_password(password)
+        
+        # Update profile fields if provided
+        if 'profile' in validated_data:
+            profile_data = validated_data.pop('profile')
+            # Use get_or_create to handle existing users without profiles
+            profile, created = Profile.objects.get_or_create(user=instance)
+            if 'llm_api_key' in profile_data:
+                profile.llm_api_key = profile_data['llm_api_key']
+            profile.save()
+
+        # Update other fields normally
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        
+        instance.save()
+        return instance
 
 
 class MessageSerializer(serializers.ModelSerializer):

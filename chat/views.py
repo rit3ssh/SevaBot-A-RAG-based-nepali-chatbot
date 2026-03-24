@@ -21,6 +21,14 @@ import threading
 
 logger = logging.getLogger(__name__)
 
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def health_check(request):
+    """
+    Simple health check endpoint for mobile app testing.
+    """
+    return Response({'status': 'ok', 'message': 'SevaBot Backend is running'})
+
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def signup(request):
@@ -45,15 +53,28 @@ def signup(request):
 def login(request):
     """
     User login endpoint.
-    Validates credentials and returns token.
+    Validates credentials (username or email) and returns token.
     """
-    username = request.data.get('username')
+    identifier = request.data.get('username') or request.data.get('email')
     password = request.data.get('password')
     
-    # Authenticate user
-    user = authenticate(username=username, password=password)
+    if not identifier or not password:
+        return Response({'error': 'कृपया username/email र password दुबै प्रदान गर्नुहोस्।'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # First try authenticating by username
+    user = authenticate(username=identifier, password=password)
     
+    # If fails, try authenticating by email
+    if user is None:
+        try:
+            user_obj = User.objects.get(email=identifier)
+            user = authenticate(username=user_obj.username, password=password)
+        except (User.DoesNotExist, User.MultipleObjectsReturned):
+            pass
+            
     if user is not None:
+        if not user.is_active:
+             return Response({'error': 'तपाईंको खाता निष्क्रिय छ।'}, status=status.HTTP_403_FORBIDDEN)
         token, created = Token.objects.get_or_create(user=user)
         return Response({
             'token': token.key,
@@ -61,7 +82,7 @@ def login(request):
         })
     
     return Response(
-        {'error': 'Invalid credentials'}, 
+        {'error': 'username/email वा password गलत छ। कृपया फेरी प्रयास गर्नुहोस्।'}, 
         status=status.HTTP_401_UNAUTHORIZED
     )
 
@@ -73,8 +94,49 @@ def logout(request):
     Logout endpoint.
     Deletes the user's authentication token.
     """
-    request.user.auth_token.delete()
-    return Response({'message': 'Successfully logged out'})
+    try:
+        request.user.auth_token.delete()
+        return Response({'message': 'Successfully logged out'}, status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(['GET', 'PATCH'])
+@permission_classes([IsAuthenticated])
+def profile(request):
+    """
+    User profile management.
+    GET: Current user info.
+    PATCH: Update username or email.
+    """
+    user = request.user
+    if request.method == 'GET':
+        return Response(UserSerializer(user).data)
+    elif request.method == 'PATCH':
+        serializer = UserSerializer(user, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(UserSerializer(user).data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def change_password(request):
+    """
+    Endpoint to change password.
+    Requires old_password and new_password.
+    """
+    user = request.user
+    old_password = request.data.get('old_password')
+    new_password = request.data.get('new_password')
+    if not old_password or not new_password:
+        return Response({'error': 'Old password and new password are required.'}, status=status.HTTP_400_BAD_REQUEST)
+    if not user.check_password(old_password):
+        return Response({'error': 'Incorrect current password.'}, status=status.HTTP_400_BAD_REQUEST)
+    if len(new_password) < 8:
+        return Response({'error': 'Password must be at least 8 characters long.'}, status=status.HTTP_400_BAD_REQUEST)
+    user.set_password(new_password)
+    user.save()
+    return Response({'message': 'Password changed successfully'})
 
 
 
@@ -410,15 +472,11 @@ class ConversationViewSet(viewsets.ModelViewSet):
         top_chunks = all_context_chunks[:5]
             
         if not top_chunks:
-            msg = """मलाई तपाईंको प्रश्नको उत्तर दिन पर्याप्त जानकारी छैन। 
-
-    कृपया कानुनी दस्तावेज अपलोड गर्नुहोस् वा अधिक विशिष्ट प्रश्न सोध्नुहोस्।
-
-    (I don't have enough information to answer your question. Please upload a legal document or ask a more specific question.)"""
-            return {
-                'response': msg,
-                'sources': {}
-            }
+            # Fallback for general conversation (greetings, etc.) or when no context is found
+            logger.info("No context chunks found - attempting general response")
+            pass
+            
+        # Log sources for debugging
         
         # Build detailed source metadata for frontend citation chips
         source_counts = {}
@@ -473,19 +531,41 @@ class ConversationViewSet(viewsets.ModelViewSet):
             
         print(f"Context sources: {source_counts}")
         
-        # Format RAG prompt
-        prompt = rag_service.format_rag_prompt(user_input, top_chunks)
+        # Format prompt
+        if top_chunks:
+            prompt = rag_service.format_rag_prompt(user_input, top_chunks)
+            system_instruction = "तपाईं एक नेपाली कानुनी सहायक हुनुहुन्छ। दिइएको सन्दर्भको आधारमा मात्र नेपालीमा उत्तर दिनुहोस्।"
+        else:
+            # General conversation prompt
+            prompt = f"""प्रश्न: {user_input}
+            
+निर्देशन: 
+तपाईं एक सहयोगी कानुनी सहायक (SevaBot) हुनुहुन्छ। 
+प्रयोगकर्ताले सोधेको प्रश्नको लागि कुनै विशिष्ट कानुनी दस्तावेज (सन्दर्भ) भेटिएन।
+१. यदि यो सामान्य कुराकानी (जस्तै 'नमस्कार', 'के छ') हो भने, शिष्टतापूर्वक नेपालीमा जवाफ दिनुहोस्।
+२. यदि यो कानुनी प्रश्न हो भने, प्रयोगकर्तालाई जानकारी दिनुहोस् कि तपाईंसँग यस विषयमा विशिष्ट जानकारी वा दस्तावेज छैन, र उहाँलाई सम्बन्धित दस्तावेज अपलोड गर्न वा कानुनी विज्ञसँग परामर्श गर्न सुझाव दिनुहोस्।
+३. गलत जानकारी नदिनुहोस्।
+"""
+            system_instruction = "तपाईं एक सहयोगी नेपाली कानुनी सहायक हुनुहुन्छ। सन्दर्भ बिनाको प्रश्नहरूको लागि बुद्धिमानीपूर्वक जवाफ दिनुहोस्।"
         
         # Generate response using LLM
         try:
-            client = Groq(api_key=settings.GROQ_API_KEY)
+            # Check if user has a custom API key in their profile
+            effective_api_key = settings.GROQ_API_KEY
+            if hasattr(conversation.user, 'profile') and conversation.user.profile.llm_api_key:
+                custom_key = conversation.user.profile.llm_api_key.strip()
+                if custom_key:
+                    effective_api_key = custom_key
+                    logger.info(f"Using custom LLM API key for user {conversation.user.username}")
+
+            client = Groq(api_key=effective_api_key)
             
             response = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=[
                     {
                         "role": "system",
-                        "content": "तपाईं एक नेपाली कानुनी सहायक हुनुहुन्छ। दिइएको सन्दर्भको आधारमा मात्र नेपालीमा उत्तर दिनुहोस्।"
+                        "content": system_instruction
                     },
                     {
                         "role": "user",

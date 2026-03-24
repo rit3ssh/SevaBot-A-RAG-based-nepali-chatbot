@@ -16,19 +16,25 @@
     -moz-osx-font-smoothing: grayscale;
   }
 
-  /* Custom scrollbar */
-  ::-webkit-scrollbar {
-    width: 8px;
+  /* Hide scrollbar globally but keep functionality */
+  * {
+    -ms-overflow-style: none;  /* IE and Edge */
+    scrollbar-width: none;     /* Firefox */
   }
-  ::-webkit-scrollbar-track {
-    background: rgba(188, 204, 220, 0.25);
+
+  *::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
   }
-  ::-webkit-scrollbar-thumb {
-    background: #bcccdc;
-    border-radius: 9999px;
+
+  /* Custom scrollbar utility if needed for specific cases */
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
   }
-  ::-webkit-scrollbar-thumb:hover {
-    background: #829ab1;
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
   }
 
   /* Nepali text styling */
