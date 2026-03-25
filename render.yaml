@@ -11,19 +11,19 @@ services:
       - key: USE_WHITENOISE
         value: "True"
       - key: ALLOWED_HOSTS
-        sync: false
+        value: ""
       - key: CORS_ALLOWED_ORIGINS
-        sync: false
+        value: ""
       - key: CSRF_TRUSTED_ORIGINS
-        sync: false
+        value: ""
       - key: SECRET_KEY
-        generateValue: true
+        value: ""
       - key: GROQ_API_KEY
-        sync: false
+        value: ""
       - key: LLAMAPARSE_API_KEY
-        sync: false
+        value: ""
 
-  - type: static
+  - type: web
     name: sevabot-frontend
     env: static
     rootDir: frontend
@@ -31,4 +31,4 @@ services:
     staticPublishPath: dist
     envVars:
       - key: VITE_API_BASE_URL
-        sync: false
+        value: ""
