@@ -115,12 +115,6 @@ class DocumentViewSet(viewsets.ModelViewSet):
                     {'error': 'Invalid conversation'},
                     status=status.HTTP_404_NOT_FOUND
                 )
-        else:
-            # Allow upload before first message by creating a new conversation automatically.
-            conversation = Conversation.objects.create(
-                user=request.user,
-                title='नयाँ कुराकानी'
-            )
         
         if not file:
             return Response(
@@ -237,6 +231,55 @@ class ConversationViewSet(viewsets.ModelViewSet):
     
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
+
+    def _get_scoped_user_documents(self, conversation):
+        """
+        Resolve user document scope for retrieval.
+        Scope options:
+        - conversation: only docs attached to this conversation
+        - selected: explicit previous docs chosen by user
+        - all_user: all completed docs of this user
+        """
+        base_qs = Document.objects.filter(
+            user=conversation.user,
+            status='completed'
+        ).exclude(
+            collection_id__isnull=True
+        ).exclude(
+            collection_id=''
+        )
+
+        if conversation.retrieval_scope == 'all_user':
+            return base_qs.order_by('-created_at')
+
+        if conversation.retrieval_scope == 'selected':
+            selected_ids = conversation.selected_document_ids or []
+            if not isinstance(selected_ids, list) or not selected_ids:
+                return base_qs.none()
+
+            try:
+                selected_ids = [int(doc_id) for doc_id in selected_ids]
+            except (TypeError, ValueError):
+                logger.warning(
+                    f"Invalid selected_document_ids on conversation {conversation.id}: {selected_ids}"
+                )
+                return base_qs.none()
+
+            return base_qs.filter(id__in=selected_ids).order_by('-created_at')
+
+        return base_qs.filter(conversation=conversation).order_by('-created_at')
+
+    def _resolve_search_source(self, conversation):
+        """
+        Decide retrieval source using strict scope rules:
+        - conversation scope: current conversation docs if present, else permanent KB
+        - selected scope: only selected docs, else permanent KB
+        - all_user scope: all user docs if present, else permanent KB
+        """
+        documents = self._get_scoped_user_documents(conversation)
+        if documents.exists():
+            return 'user', documents
+        return 'permanent', documents
     
     def destroy(self, request, *args, **kwargs):
         """
@@ -257,24 +300,18 @@ class ConversationViewSet(viewsets.ModelViewSet):
         content = request.data.get('content', '')
         use_rag = request.data.get('use_rag', True)  # Enable RAG by default
         
-        # Auto-detect search source based on user documents
+        # Auto-detect search source based on conversation retrieval scope
         if 'search_source' in request.data:
             # User explicitly specified source
             search_source = request.data.get('search_source')
         else:
-            # Auto-detect:
-            # - if conversation has completed documents, search both (user first, then permanent)
-            # - otherwise, search permanent KB
-            documents = conversation.documents.filter(status='completed')
-            if documents.exists():
-                search_source = 'all'
-                logger.info(
-                    f"Auto-detected {documents.count()} user documents, "
-                    "setting search_source='all' (user first + permanent)"
-                )
-            else:
-                search_source = 'permanent'  # Fall back to permanent KB
-                logger.info("No user documents found, setting search_source='permanent'")
+            search_source, documents = self._resolve_search_source(conversation)
+            logger.info(
+                "Auto search source resolved: scope=%s docs=%s source=%s",
+                conversation.retrieval_scope,
+                documents.count(),
+                search_source,
+            )
         
         logger.info(f"Using RAG: {use_rag}, Source: {search_source}")
         
@@ -354,8 +391,8 @@ class ConversationViewSet(viewsets.ModelViewSet):
         # Initialize RAG service
         rag_service = NepaliRAGService()
         
-        # Only use documents attached to this conversation (per-chat isolation)
-        documents = conversation.documents.filter(status='completed')
+        # Resolve documents according to conversation retrieval scope.
+        documents = self._get_scoped_user_documents(conversation)
         
         # Decide retrieval strategy
         all_context_chunks = []
@@ -371,7 +408,10 @@ class ConversationViewSet(viewsets.ModelViewSet):
         # 1. Retrieve from User Documents if requested (only current conversation)
         if search_source in ['user', 'all']:
             if documents.exists():
-                logger.info(f"Retrieving from {documents.count()} conversation-specific user documents")
+                logger.info(
+                    f"Retrieving from {documents.count()} user documents "
+                    f"(scope={conversation.retrieval_scope})"
+                )
                 for doc in documents:
                     if doc.collection_id:
                         chunks = rag_service.retrieve_context(
@@ -384,7 +424,9 @@ class ConversationViewSet(viewsets.ModelViewSet):
                             chunk['_combined_score'] = _priority_relevance(chunk, 0.03)
                         all_context_chunks.extend(chunks)
             else:
-                logger.warning("User search requested but no documents found for this conversation")
+                logger.warning(
+                    f"User search requested but no documents found for scope={conversation.retrieval_scope}"
+                )
         
         # 2. Retrieve from Permanent KB if requested
         if search_source in ['permanent', 'all']:
@@ -607,9 +649,8 @@ class MessageViewSet(viewsets.ModelViewSet):
             conversation_viewset = ConversationViewSet()
             conversation_viewset.request = request
             
-            # Auto-detect search source
-            documents = message.conversation.documents.filter(status='completed')
-            search_source = 'user' if documents.exists() else 'permanent'
+            # Auto-detect search source using strict scope policy
+            search_source, _ = conversation_viewset._resolve_search_source(message.conversation)
             
             response_data = conversation_viewset.generate_rag_response(
                 message.conversation,

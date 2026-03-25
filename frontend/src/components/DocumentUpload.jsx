@@ -28,6 +28,9 @@ export default function DocumentUpload({ conversationId, onUploadComplete }) {
     
     try {
       const response = await documentAPI.upload(file, conversationId || null);
+      if (onUploadComplete) {
+        onUploadComplete(response.data);
+      }
       setUploading(false);
       setProcessing(true);
       
@@ -62,6 +65,9 @@ export default function DocumentUpload({ conversationId, onUploadComplete }) {
         
         if (status === 'failed') {
           setProcessing(false);
+          if (onUploadComplete) {
+            onUploadComplete(response.data);
+          }
           setError('प्रक्रिया असफल');
           setTimeout(() => setError(''), 3000);
           return;

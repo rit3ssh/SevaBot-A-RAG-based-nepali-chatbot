@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { conversationAPI, authAPI, messageAPI } from '../services/api';
+import { conversationAPI, authAPI, messageAPI, documentAPI } from '../services/api';
 import Sidebar from '../components/Sidebar';
 import DocumentUpload from '../components/DocumentUpload';
 import { transliterate } from '../utils/nepaliRomanized';
@@ -25,6 +25,12 @@ export default function Chat() {
   const [regeneratingMessageId, setRegeneratingMessageId] = useState(null);
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
   const [processingConversationId, setProcessingConversationId] = useState(null);
+  const [availableDocuments, setAvailableDocuments] = useState([]);
+  const [allUploadedDocuments, setAllUploadedDocuments] = useState([]);
+  const [selectedDocumentIds, setSelectedDocumentIds] = useState([]);
+  const [loadingDocuments, setLoadingDocuments] = useState(false);
+  const [hasAnyUploadedDocuments, setHasAnyUploadedDocuments] = useState(false);
+  const [isInitializing, setIsInitializing] = useState(true);
 
   const formatChatTimestamp = (isoString) => {
     if (!isoString) return '';
@@ -62,7 +68,24 @@ export default function Chat() {
     if (savedRomanizedTyping === 'false') {
       setRomanizedTypingEnabled(false);
     }
-    loadConversations();
+
+    const bootstrap = async () => {
+      try {
+        const conversationsData = await loadConversations();
+        await loadAvailableDocuments();
+
+        const savedConversationIdRaw = localStorage.getItem('activeConversationId');
+        const savedConversationId = savedConversationIdRaw ? Number(savedConversationIdRaw) : null;
+
+        if (savedConversationId && conversationsData.some((conversation) => conversation.id === savedConversationId)) {
+          await loadConversation(savedConversationId);
+        }
+      } finally {
+        setIsInitializing(false);
+      }
+    };
+
+    bootstrap();
   }, []);
 
   useEffect(() => {
@@ -82,8 +105,10 @@ export default function Chat() {
     try {
       const response = await conversationAPI.list();
       setConversations(response.data);
+      return response.data || [];
     } catch (error) {
       console.error('Failed to load conversations:', error);
+      return [];
     }
   };
 
@@ -91,11 +116,13 @@ export default function Chat() {
     try {
       const response = await conversationAPI.get(id);
       setActiveConversation(response.data);
+      localStorage.setItem('activeConversationId', String(response.data.id));
       const msgs = response.data.messages || [];
       setMessages(msgs);
       // Pick latest assistant message with sources to display chips after reload
       const lastAssistantWithSources = [...msgs].reverse().find((m) => m.role === 'assistant' && m.sources);
       setLastSources(lastAssistantWithSources?.sources || null);
+      setSelectedDocumentIds([]);
       setSelectedCitation(null);
       setRegeneratingMessageId(null);
       setSidebarOpen(false);
@@ -109,20 +136,132 @@ export default function Chat() {
     return latestUser?.id ?? null;
   };
 
-  const startNewChat = async () => {
+  const startNewChat = async (options = {}) => {
+    const scope = options.retrievalScope || 'conversation';
+    const selectedIds = (options.selectedDocumentIds || []).map((value) => Number(value)).filter(Boolean);
+
     try {
-      const response = await conversationAPI.create({ title: 'नयाँ कुराकानी' });
+      const payload = {
+        title: 'नयाँ कुराकानी',
+        retrieval_scope: scope,
+        selected_document_ids: scope === 'selected' ? selectedIds : [],
+      };
+
+      const response = await conversationAPI.create(payload);
       setConversations((prev) => [response.data, ...prev]);
       setActiveConversation(response.data);
+      localStorage.setItem('activeConversationId', String(response.data.id));
       setMessages([]);
       setSidebarOpen(false);
       setLastSources(null);
       setSelectedCitation(null);
+      setRegeneratingMessageId(null);
+      setProcessingConversationId(null);
+      setSelectedDocumentIds([]);
       return response.data;
     } catch (error) {
       console.error('Failed to create conversation:', error);
       return null;
     }
+  };
+
+  const loadAvailableDocuments = async () => {
+    setLoadingDocuments(true);
+    try {
+      const response = await documentAPI.list();
+      const allDocs = response.data || [];
+      setHasAnyUploadedDocuments(allDocs.length > 0);
+      setAllUploadedDocuments(allDocs);
+      const completedDocs = allDocs.filter((doc) => doc.status === 'completed');
+      setAvailableDocuments(completedDocs);
+    } catch (error) {
+      console.error('Failed to load available documents:', error);
+      setHasAnyUploadedDocuments(false);
+      setAllUploadedDocuments([]);
+      setAvailableDocuments([]);
+    } finally {
+      setLoadingDocuments(false);
+    }
+  };
+
+  const openNewChatScopeModal = async () => {
+    localStorage.removeItem('activeConversationId');
+    setActiveConversation(null);
+    setMessages([]);
+    setLastSources(null);
+    setSelectedCitation(null);
+    setRegeneratingMessageId(null);
+    setProcessingConversationId(null);
+    setSelectedDocumentIds([]);
+    setSidebarOpen(false);
+    await loadAvailableDocuments();
+  };
+
+  const toggleSelectedDocument = (docId) => {
+    const targetDoc = allUploadedDocuments.find((doc) => Number(doc.id) === Number(docId));
+    if (targetDoc && targetDoc.status !== 'completed') {
+      return;
+    }
+
+    setSelectedDocumentIds((prev) => (
+      prev.includes(docId)
+        ? prev.filter((id) => id !== docId)
+        : [...prev, docId]
+    ));
+  };
+
+  const getDocumentStatusMeta = (statusValue) => {
+    const normalized = (statusValue || '').toLowerCase();
+    if (normalized === 'completed') {
+      return {
+        label: 'completed',
+        className: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+      };
+    }
+    if (normalized === 'processing') {
+      return {
+        label: 'processing',
+        className: 'bg-amber-100 text-amber-700 border-amber-200',
+      };
+    }
+    if (normalized === 'pending') {
+      return {
+        label: 'pending',
+        className: 'bg-slate-100 text-slate-700 border-slate-200',
+      };
+    }
+    if (normalized === 'failed') {
+      return {
+        label: 'failed',
+        className: 'bg-rose-100 text-rose-700 border-rose-200',
+      };
+    }
+    return {
+      label: normalized || 'unknown',
+      className: 'bg-slate-100 text-slate-700 border-slate-200',
+    };
+  };
+
+  const getSelectedConversationFileNames = (conversation) => {
+    if (!conversation || conversation.retrieval_scope !== 'selected') return [];
+
+    const selectedIds = Array.isArray(conversation.selected_document_ids)
+      ? conversation.selected_document_ids
+      : [];
+
+    if (!selectedIds.length) return [];
+
+    const names = selectedIds
+      .map((selectedId) => (
+        availableDocuments.find((doc) => Number(doc.id) === Number(selectedId))?.filename
+      ))
+      .filter(Boolean);
+
+    if (names.length) {
+      return names;
+    }
+
+    return selectedIds.map((selectedId) => `Document ${selectedId}`);
   };
 
   const sendMessageToConversation = async (conversationId, content) => {
@@ -168,7 +307,11 @@ export default function Chat() {
 
     let targetConversation = activeConversation;
     if (!targetConversation) {
-      targetConversation = await startNewChat();
+      const retrievalScope = selectedDocumentIds.length > 0 ? 'selected' : 'conversation';
+      targetConversation = await startNewChat({
+        retrievalScope,
+        selectedDocumentIds,
+      });
       if (!targetConversation) return;
     }
 
@@ -189,6 +332,7 @@ export default function Chat() {
 
   const handleDocumentUploadComplete = () => {
     loadConversations();
+    loadAvailableDocuments();
   };
 
   const handleStartEdit = (message) => {
@@ -288,6 +432,7 @@ export default function Chat() {
       await conversationAPI.delete(conversationId);
       setConversations((prev) => prev.filter((conversation) => conversation.id !== conversationId));
       if (activeConversation?.id === conversationId) {
+        localStorage.removeItem('activeConversationId');
         setActiveConversation(null);
         setMessages([]);
         setLastSources(null);
@@ -408,7 +553,7 @@ export default function Chat() {
         sidebarOpen={sidebarOpen}
         setSidebarOpen={setSidebarOpen}
         onSelectConversation={loadConversation}
-        onNewChat={startNewChat}
+        onNewChat={openNewChatScopeModal}
         onLogout={handleLogout}
         onDeleteConversation={handleDeleteConversation}
       />
@@ -433,37 +578,137 @@ export default function Chat() {
         </div>
 
         <div className="flex-1 overflow-y-auto px-4 py-6 md:px-8 md:py-8">
-          {messages.length === 0 ? (
+          {isInitializing ? (
+            <div className="h-full flex items-center justify-center">
+              <div className="text-center">
+                <div className="mx-auto mb-3 h-8 w-8 animate-spin rounded-full border-2 border-primary-300 border-t-primary-700" />
+                <p className="text-sm text-slate-500">Loading conversation...</p>
+              </div>
+            </div>
+          ) : messages.length === 0 ? (
             <div className="h-full flex items-center justify-center">
               <div className="w-full max-w-3xl px-4 text-center">
-                <div className="w-16 h-16 bg-primary-900 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-xl shadow-primary-900/20"><span className="text-3xl">&#x1F64F;</span></div>
-                <h2 className="np-heading text-2xl mb-2 text-primary-900">नमस्कार!</h2>
-                <p className="text-primary-600 text-sm mb-8">तपाईंको नेपाली कानुनी सहायक — Retrieval-Augmented Generation with SBERT Reranking</p>
-                <div className="grid md:grid-cols-2 gap-4 text-left">
-                  <div className="rounded-2xl border border-primary-200 bg-white/90 p-5 shadow-sm">
-                    <h3 className="font-semibold text-sm text-primary-900 mb-3">कसरी प्रयोग गर्ने</h3>
-                    <div className="space-y-3 text-sm">
-                      <p><span className="font-semibold text-primary-800">1.</span> PDF दस्तावेज अपलोड गर्नुहोस्</p>
-                      <p><span className="font-semibold text-primary-800">2.</span> SBERT embedding र indexing पर्खनुहोस्</p>
-                      <p><span className="font-semibold text-primary-800">3.</span> नेपालीमा प्रश्न सोध्नुहोस्</p>
-                    </div>
-                  </div>
-                  <div className="rounded-2xl border border-primary-200 bg-gradient-to-br from-primary-900 to-primary-800 p-5 shadow-sm text-primary-100">
-                    <h3 className="font-semibold text-sm mb-3">Pipeline</h3>
-                    <div className="text-xs space-y-2 text-primary-200">
-                      <p>• Query Encoding with `multilingual-e5-large`</p>
-                      <p>• Dense Retrieval from ChromaDB</p>
-                      <p>• Cross-Encoder SBERT Reranking</p>
-                      <p>• Grounded Nepali Response Generation</p>
-                    </div>
-                  </div>
-                </div>
+                {!activeConversation ? (
+                  <>
+                    {!hasAnyUploadedDocuments ? (
+                      <>
+                        <div className="w-16 h-16 bg-primary-900 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-xl shadow-primary-900/20"><span className="text-3xl">&#x1F64F;</span></div>
+                        <h2 className="np-heading text-2xl mb-2 text-primary-900">नमस्कार!</h2>
+                        <p className="text-primary-600 text-sm mb-8">तपाईंको नेपाली कानुनी सहायक — Retrieval-Augmented Generation with SBERT Reranking</p>
+                      </>
+                    ) : (
+                      <>
+                        <div className="w-14 h-14 bg-primary-900 rounded-2xl flex items-center justify-center mx-auto mb-5 shadow-xl shadow-primary-900/20"><span className="text-2xl">💬</span></div>
+                        <h2 className="np-heading text-xl mb-2 text-primary-900">Select documents to start</h2>
+                        <p className="text-primary-600 text-sm mb-6">नयाँ च्याट सुरु गर्नु अघि पुराना दस्तावेज छान्न सक्नुहुन्छ।</p>
+
+                        <div className="grid md:grid-cols-2 gap-4 text-left mb-6">
+                          <div className={`rounded-2xl border p-4 ${isDark ? 'bg-slate-900/80 border-slate-700' : 'bg-white/90 border-primary-200'} md:col-span-2`}>
+                            <div className="flex items-center justify-between mb-3">
+                              <h3 className={`font-semibold text-sm ${isDark ? 'text-slate-100' : 'text-primary-900'}`}>Your uploaded documents</h3>
+                              <button
+                                type="button"
+                                onClick={loadAvailableDocuments}
+                                className={`text-xs font-medium ${isDark ? 'text-slate-300 hover:text-white' : 'text-primary-700 hover:text-primary-900'}`}
+                              >
+                                Refresh
+                              </button>
+                            </div>
+
+                            {loadingDocuments ? (
+                              <div className="text-xs text-slate-500 py-4 text-center">दस्तावेज लोड हुँदैछ...</div>
+                            ) : allUploadedDocuments.length === 0 ? (
+                              <div className="text-xs text-slate-500 py-4 text-center">दस्तावेज भेटिएन।</div>
+                            ) : (
+                              <div className="max-h-64 overflow-y-auto space-y-2 pr-1">
+                                {allUploadedDocuments.map((doc) => {
+                                  const isCompleted = doc.status === 'completed';
+                                  const statusMeta = getDocumentStatusMeta(doc.status);
+                                  return (
+                                    <button
+                                      type="button"
+                                      key={doc.id}
+                                      onClick={() => toggleSelectedDocument(doc.id)}
+                                      disabled={!isCompleted}
+                                      className={`w-full rounded-xl border px-3 py-2 text-left transition ${selectedDocumentIds.includes(doc.id)
+                                        ? 'border-primary-500 bg-primary-50'
+                                        : isDark ? 'border-slate-700 hover:border-slate-500' : 'border-primary-100 hover:border-primary-300'} ${!isCompleted ? 'cursor-not-allowed opacity-80' : ''}`}
+                                    >
+                                      <div className="flex items-center justify-between gap-3">
+                                        <div className="min-w-0">
+                                          <div className={`text-sm font-semibold truncate ${isDark ? 'text-slate-100' : 'text-primary-900'}`}>{doc.filename}</div>
+                                          <div className="text-[11px] text-slate-500">
+                                            {doc.num_pages != null && Number(doc.num_pages) > 0
+                                              ? `${doc.num_pages} pages`
+                                              : doc.status === 'completed'
+                                                ? 'Processed document'
+                                                : 'Pages not ready'}
+                                          </div>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                          <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase ${statusMeta.className}`}>
+                                            {statusMeta.label}
+                                          </span>
+                                          <input
+                                            type="checkbox"
+                                            checked={selectedDocumentIds.includes(doc.id)}
+                                            disabled={!isCompleted}
+                                            onChange={() => toggleSelectedDocument(doc.id)}
+                                            onClick={(event) => event.stopPropagation()}
+                                          />
+                                        </div>
+                                      </div>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+
+                          <div className={`rounded-2xl border border-dashed p-4 flex items-center justify-between ${isDark ? 'border-slate-700 bg-slate-900/60' : 'border-primary-300 bg-white/90'}`}>
+                            <div>
+                              <h4 className={`text-sm font-semibold ${isDark ? 'text-slate-100' : 'text-primary-900'}`}>Upload more documents</h4>
+                              <p className="text-xs text-slate-500">नयाँ PDF अपलोड गरेर तुरुन्त प्रयोग गर्न सक्नुहुन्छ।</p>
+                            </div>
+                            <DocumentUpload conversationId={null} onUploadComplete={handleDocumentUploadComplete} />
+                          </div>
+
+                          <div className={`rounded-2xl border p-4 ${isDark ? 'bg-slate-900/60 border-slate-700' : 'bg-white/90 border-primary-200'}`}>
+                            <h4 className={`text-sm font-semibold ${isDark ? 'text-slate-100' : 'text-primary-900'}`}>Current selection</h4>
+                            <p className="text-xs text-slate-500 mt-1">
+                              {selectedDocumentIds.length > 0
+                                ? `${selectedDocumentIds.length} document selected — first message पछि selected-scope chat सुरु हुन्छ।`
+                                : 'No document selected — पहिलो प्रश्नपछि permanent knowledge base प्रयोग हुनेछ।'}
+                            </p>
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <div className="w-14 h-14 bg-primary-900 rounded-2xl flex items-center justify-center mx-auto mb-5 shadow-xl shadow-primary-900/20"><span className="text-2xl">💬</span></div>
+                    <h2 className="np-heading text-xl mb-2 text-primary-900">Start this conversation</h2>
+                    <p className="text-primary-600 text-sm mb-8">तल प्रश्न टाइप गरेर सोही scope अनुसार उत्तर पाउनुहोस्।</p>
+                  </>
+                )}
               </div>
             </div>
           ) : (
             <div className="max-w-4xl mx-auto space-y-5">
-              {messages.map((message, index) => (
+              {messages.map((message, index) => {
+                const selectedFileNames = getSelectedConversationFileNames(activeConversation);
+                return (
                 <div key={message.id}>
+                  {message.role === 'user' &&
+                    index === messages.findIndex((item) => item.role === 'user') &&
+                    selectedFileNames.length > 0 && (
+                    <div className="mb-2 flex justify-center">
+                      <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[10px] font-medium ${isDark ? 'bg-slate-900 text-slate-300 border border-slate-700' : 'bg-white text-primary-700 border border-primary-200'}`}>
+                        {selectedFileNames.join(', ')}
+                      </span>
+                    </div>
+                  )}
                   <div className={`flex message-enter ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                   <div className={`max-w-[90%] md:max-w-[78%] rounded-2xl px-4 py-3 md:px-5 md:py-4 shadow-sm ${message.role === 'user' ? 'bg-primary-900 text-white shadow-primary-900/20' : isDark ? 'bg-slate-900/90 border border-slate-700 text-slate-100' : 'bg-white/95 border border-primary-200 text-primary-800'}`}>
                     {message.role === 'assistant' && (
@@ -524,7 +769,7 @@ export default function Chat() {
                     </div>
                   )}
                 </div>
-              ))}
+              );})}
 
               {loading && !regeneratingMessageId && processingConversationId === activeConversation?.id && (
                 <div className="flex justify-start message-enter">
@@ -629,7 +874,7 @@ export default function Chat() {
               {selectedCitation.preview && (
                 <div className="space-y-1">
                   <div className="text-[12px] text-slate-600">Snippet</div>
-                  <div className={`rounded-xl border px-3 py-2 text-[12px] leading-relaxed ${isDark ? 'border-slate-700 bg-slate-800 text-slate-100' : 'border-primary-100 bg-primary-50 text-primary-900'}`}>
+                  <div className={`max-h-72 overflow-y-auto rounded-xl border px-3 py-2 text-[12px] leading-relaxed ${isDark ? 'border-slate-700 bg-slate-800 text-slate-100' : 'border-primary-100 bg-primary-50 text-primary-900'}`}>
                     {selectedCitation.preview}
                   </div>
                 </div>

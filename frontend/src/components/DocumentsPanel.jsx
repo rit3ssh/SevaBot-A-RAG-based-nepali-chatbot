@@ -1,28 +1,35 @@
 import { useState, useEffect } from 'react';
 import { documentAPI } from '../services/api';
 
-export default function DocumentsPanel({ conversationId }) {
+export default function DocumentsPanel() {
   const [documents, setDocuments] = useState([]);
   const [loading, setLoading] = useState(true);
   
   useEffect(() => {
     loadDocuments();
-  }, [conversationId]);
+    const intervalId = setInterval(() => {
+      loadDocuments(false);
+    }, 4000);
+
+    return () => clearInterval(intervalId);
+  }, []);
   
-  const loadDocuments = async () => {
-    if (!conversationId) {
-      setDocuments([]);
-      setLoading(false);
-      return;
+  const loadDocuments = async (showLoading = true) => {
+    if (showLoading) {
+      setLoading(true);
     }
 
     try {
-      const response = await documentAPI.list(conversationId);
-      setDocuments(response.data);
+      const response = await documentAPI.list();
+      const docs = response.data || [];
+      docs.sort((left, right) => new Date(right.created_at) - new Date(left.created_at));
+      setDocuments(docs);
     } catch (error) {
       console.error('Failed to load documents:', error);
     } finally {
-      setLoading(false);
+      if (showLoading) {
+        setLoading(false);
+      }
     }
   };
   
@@ -78,6 +85,15 @@ export default function DocumentsPanel({ conversationId }) {
   
   return (
     <div className="p-2.5 space-y-2">
+      <div className="flex items-center justify-end px-1">
+        <button
+          type="button"
+          onClick={() => loadDocuments(true)}
+          className="text-[10px] text-primary-300 hover:text-white transition"
+        >
+          Refresh
+        </button>
+      </div>
       {documents.map((doc) => (
         <div
           key={doc.id}

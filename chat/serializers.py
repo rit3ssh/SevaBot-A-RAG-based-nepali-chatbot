@@ -115,8 +115,65 @@ class ConversationSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Conversation
-        fields = ['id', 'title', 'created_at', 'updated_at', 'messages', 'message_count', 'recent_exchange']
+        fields = [
+            'id',
+            'title',
+            'retrieval_scope',
+            'selected_document_ids',
+            'created_at',
+            'updated_at',
+            'messages',
+            'message_count',
+            'recent_exchange',
+        ]
         read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def validate_selected_document_ids(self, value):
+        request = self.context.get('request')
+        if value in (None, ''):
+            return []
+        if not isinstance(value, list):
+            raise serializers.ValidationError('selected_document_ids must be a list of document IDs.')
+
+        normalized_ids = []
+        for item in value:
+            try:
+                normalized_ids.append(int(item))
+            except (TypeError, ValueError):
+                raise serializers.ValidationError('selected_document_ids must contain only integer IDs.')
+
+        deduped_ids = list(dict.fromkeys(normalized_ids))
+
+        if request and deduped_ids:
+            allowed_ids = set(
+                Document.objects.filter(user=request.user, id__in=deduped_ids).values_list('id', flat=True)
+            )
+            unauthorized_ids = [doc_id for doc_id in deduped_ids if doc_id not in allowed_ids]
+            if unauthorized_ids:
+                raise serializers.ValidationError(
+                    f'Invalid document IDs for current user: {unauthorized_ids}'
+                )
+
+        return deduped_ids
+
+    def validate(self, attrs):
+        retrieval_scope = attrs.get(
+            'retrieval_scope',
+            getattr(self.instance, 'retrieval_scope', 'conversation')
+        )
+        selected_ids = attrs.get(
+            'selected_document_ids',
+            getattr(self.instance, 'selected_document_ids', [])
+        )
+
+        if retrieval_scope != 'selected':
+            attrs['selected_document_ids'] = []
+        elif not selected_ids:
+            raise serializers.ValidationError({
+                'selected_document_ids': 'Choose at least one document when retrieval_scope is selected.'
+            })
+
+        return attrs
 
     def get_message_count(self, obj):
         return obj.messages.count()
@@ -139,12 +196,16 @@ class ConversationListSerializer(serializers.ModelSerializer):
     chat_started_at = serializers.SerializerMethodField()
     last_interacted_at = serializers.SerializerMethodField()
     recent_exchange = serializers.SerializerMethodField()
+    selected_document_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Conversation
         fields = [
             'id',
             'title',
+            'retrieval_scope',
+            'selected_document_ids',
+            'selected_document_count',
             'created_at',
             'updated_at',
             'chat_started_at',
@@ -174,6 +235,12 @@ class ConversationListSerializer(serializers.ModelSerializer):
 
     def get_recent_exchange(self, obj):
         return build_recent_exchange(obj)
+
+    def get_selected_document_count(self, obj):
+        if obj.retrieval_scope != 'selected':
+            return 0
+        selected_ids = obj.selected_document_ids or []
+        return len(selected_ids)
 
 
 

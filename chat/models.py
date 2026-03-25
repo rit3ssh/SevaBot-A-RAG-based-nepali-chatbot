@@ -58,8 +58,20 @@ class Conversation(models.Model):
     Represents a chat conversation/thread.
     Each user can have multiple conversations.
     """
+    RETRIEVAL_SCOPE_CHOICES = [
+        ('conversation', 'Current Conversation Documents'),
+        ('selected', 'Selected Previous Documents'),
+        ('all_user', 'All My Documents'),
+    ]
+
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='conversations')
     title = models.CharField(max_length=255, default="New Chat")
+    retrieval_scope = models.CharField(
+        max_length=20,
+        choices=RETRIEVAL_SCOPE_CHOICES,
+        default='conversation'
+    )
+    selected_document_ids = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -97,7 +97,7 @@ export default function Sidebar({
         {/* Content Area */}
         <div className="flex-1 overflow-y-auto">
           {showDocuments ? (
-            <DocumentsPanel conversationId={activeConversation?.id} />
+            <DocumentsPanel />
           ) : (
             <div className="p-2.5">
               {conversations.length === 0 ? (
